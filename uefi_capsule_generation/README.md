@@ -109,42 +109,107 @@ QcFMPRoot.pub.pem
 QcFMPSub.pub.pem
 ```
 
-The `QcFMPRoot.cer` (or `NewRoot.cer`) is the DER certificate file used by
-`patch-capsule-cert` to update the `QcCapsuleRootCert` property directly
-in `uefi_dtbs.elf` or `xbl_config.elf` (see section 3.2).
+The `QcFMPRoot.cer` (or `NewRoot.cer`) is the DER-encoded root certificate
+of that chain. The device only accepts capsules signed with this chain if
+the certificate is embedded in the boot firmware as the
+`QcCapsuleRootCert` DTB property. The property lives in a device tree
+inside a boot config ELF: `uefi_dtbs.elf` on SPI-NOR-boot targets
+(IQ-X7181, IQ-X5121, Kaanapali, SM8750, QRB2210-RB1, CQ2390M) and
+`xbl_config.elf` on UFS-boot targets (QCS6490, QCS9100, QCS8300, QCS615).
 
-If you are using the QDTE tool instead, convert the `.cer` to a hex value
-first with `bin-to-hex`:
+There are two ways to inject it:
+
+- [qdte-lite][qdte-lite] (section 3.2), the lightweight fork of the
+  Qualcomm Device Tree Editor that replaces the legacy QDTE tool.
+- the `patch-capsule-cert` subcommand (section 3.3), which is built into
+  `qcom-capsule-tool` and needs no extra dependency.
+
+Both must run before the config ELF is signed: editing a DTB inside the
+ELF invalidates any signature it carried.
+
+[qdte-lite]: https://github.com/qualcomm/qdte-lite
+
+### 3.2 Setting QcCapsuleRootCert with qdte-lite
+
+`qdte-lite` edits device trees and assembles/disassembles the Qualcomm
+config-ELF containers that hold them. Install it with `pip` or `uv`
+(the headless `--nogui` mode needs no GUI toolkit):
 
 ```sh
-qcom-capsule-tool bin-to-hex NewRoot.cer NewRoot.inc
+pip install git+https://github.com/qualcomm/qdte-lite.git
 ```
 
-`NewRoot.inc` contains the cert as a list of 32-bit hex integers, which
-QDTE writes into the `/sw/uefi/uefiplat/QcCapsuleRootCert` node of the
-appropriate DTB.
+`qdte-lite` reads DTB property values as a list of 32-bit hex cells, which
+is exactly what `bin-to-hex` writes. Convert the DER certificate once:
 
-For more information on the QDTE Tool, refer to the
-[QDTE Tool documentation][qdte-tool].
+```sh
+qcom-capsule-tool bin-to-hex QcFMPRoot.cer QcFMPRoot.inc
+```
 
-[qdte-tool]: https://docs.qualcomm.com/bundle/publicresource/topics/80-70017-4/tools.html?vproduct=1601111740013072&version=1.3&facet=Boot#qdte
+The DTB names inside a container are assigned during disassembly, so
+rather than hardcoding them per platform, ask `qdte-lite` where the
+property lives and feed the result straight back as the `--modify` target:
 
-> **Note**: For QLI Hamoa/Purwa, `uefi_dtbs.elf` must be compressed with
-> `xz` before flashing:
->
-> ```sh
-> xz -k uefi_dtbs.elf   # -k keeps the original uncompressed file
-> ```
+```sh
+target=$(qdte-lite --nogui --input_file xbl_config.elf \
+    --find_property QcCapsuleRootCert)
+# e.g. post-ddr-kodiak-1.0.dtb/sw/uefi/uefiplat/QcCapsuleRootCert
 
+mkdir -p out
+qdte-lite --nogui \
+    --input_file xbl_config.elf \
+    --output_path out --output_file xbl_config.elf \
+    --modify "${target}=@list:QcFMPRoot.inc"
+```
 
-### 3.2 Setting QcCapsuleRootCert Without QDTE
+The patched ELF is written to `out/xbl_config.elf` (the output directory
+must already exist). `--find_property` exits non-zero when no DTB defines
+the property, so a script can bail out instead of producing an image
+without the certificate.
 
-As an alternative to QDTE, use the `patch-capsule-cert` subcommand to patch
-the certificate directly into `uefi_dtbs.elf`/`uefi_dtbs.xz` or
-`xbl_config.elf`. The ELF type is auto-detected at runtime, and a `.xz`
-input or output path is transparently decompressed/recompressed
-(pure-Python `lzma`, no `xz` binary required) around the patch step -- the
-same command and `.cer` file work for all three cases.
+`--find_property` may print more than one line. On QLI Hamoa/Purwa, for
+example, `uefi_dtbs.elf` carries `QcCapsuleRootCert` both in a base DTB
+and in a `.dtbo` overlay, at different node paths. Join the targets with
+`&` so a single `--modify` pass patches all of them. `qdte-lite` accepts
+the `.xz`-compressed `uefi_dtbs.xz` as input but always writes a plain
+ELF, so re-compress the output before flashing:
+
+```sh
+targets=$(qdte-lite --nogui --input_file uefi_dtbs.xz \
+    --find_property QcCapsuleRootCert)
+
+modify=""
+for t in ${targets}; do
+    modify="${modify:+${modify}&}${t}=@list:QcFMPRoot.inc"
+done
+
+mkdir -p out
+qdte-lite --nogui \
+    --input_file uefi_dtbs.xz \
+    --output_path out --output_file uefi_dtbs.elf \
+    --modify "${modify}"
+
+xz -c out/uefi_dtbs.elf > uefi_dtbs.xz
+```
+
+This is the flow the meta-qcom Yocto layer uses in
+[qcom-oem-cert.bbclass][meta-qcom-oem-cert], where a dedicated
+`firmware-qcom-oem-cert` recipe injects the certificate into
+`xbl_config.elf` and `uefi_dtbs.xz` after the boot firmware is deployed
+and before the capsule is built.
+
+[meta-qcom-oem-cert]: https://github.com/qualcomm-linux/meta-qcom/pull/3043
+
+### 3.3 Setting QcCapsuleRootCert with patch-capsule-cert
+
+As a self-contained alternative that needs no external tool, use the
+`patch-capsule-cert` subcommand to patch the certificate directly into
+`uefi_dtbs.elf`/`uefi_dtbs.xz` or `xbl_config.elf`. It takes the `.cer`
+as-is, with no `bin-to-hex` step. The ELF type is auto-detected at
+runtime, and a `.xz` input or output path is transparently
+decompressed/recompressed (pure-Python `lzma`, no `xz` binary required)
+around the patch step -- the same command and `.cer` file work for all
+three cases.
 
 ```sh
 qcom-capsule-tool patch-capsule-cert <input.elf> <cert.cer> <output.elf>
