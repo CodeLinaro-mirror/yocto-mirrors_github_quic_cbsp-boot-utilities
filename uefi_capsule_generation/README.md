@@ -9,17 +9,29 @@ that can be easily deployed and applied to the target hardware.
 
 ## 2. Overview of the Capsule Generation Tools
 
-The tools are packaged as a single Python distribution (`qcom-capsule-tool`)
-managed with [poetry][poetry] and runnable on Linux, macOS, and Windows
-(via MSYS2). By using OpenSSL for certificate generation and signing, the
-tools ensure that firmware updates are secure and authenticated.
+The tools are packaged as a single standard Python distribution
+(`qcom-capsule-tool`) runnable on Linux, macOS, and Windows (via MSYS2). By
+using OpenSSL for certificate generation and signing, the tools ensure that
+firmware updates are secure and authenticated.
 
 [poetry]: https://python-poetry.org/
 [pipx]: https://pipx.pypa.io/
+[pip]: https://pip.pypa.io/
 
 ### 2.1 Installation
 
-**End users -- install the tool globally with [pipx][pipx]:**
+**Requirements (all install methods):**
+
+- Python 3.9 or newer.
+- A C compiler and [SWIG](https://www.swig.org/) **older than 4.5.0**. The
+  `pylibfdt` dependency ships only as a source distribution and its SWIG
+  interface still uses a macro that SWIG 4.5.0 removed, so builds against
+  SWIG 4.5+ install fine but fail at import time with
+  `undefined symbol: PyInt_AsLong`. Check with `swig -version` and install
+  an older release (for example `swig4.0` on Debian/Ubuntu) if needed.
+
+**End users -- install the tool with [pipx][pipx] or [pip][pip]. Poetry is
+NOT required:**
 
 ```sh
 cd uefi_capsule_generation
@@ -27,10 +39,28 @@ pipx install .
 qcom-capsule-tool --help
 ```
 
-`pipx` puts the `qcom-capsule-tool` command on your `PATH` in an isolated
-venv. You can run it from any directory without a `poetry run` prefix.
+or, with plain `pip` inside a virtual environment:
 
-**Developers -- use poetry for an editable, project-local environment:**
+```sh
+cd uefi_capsule_generation
+python3 -m venv .venv
+source .venv/bin/activate      # Windows (MSYS2/Git Bash): source .venv/Scripts/activate
+pip install .
+qcom-capsule-tool --help
+```
+
+Run `source .venv/bin/activate` again in each new terminal before using the
+tool, or `deactivate` to leave the environment.
+
+Both commands build the package in an isolated environment through the
+standard `pyproject.toml` build backend (`poetry-core`, fetched
+automatically). The `poetry` command-line tool is never invoked, so it does
+not need to be installed, and any version your distribution ships is
+irrelevant. `pipx` puts `qcom-capsule-tool` on your `PATH` so you can run it
+from any directory.
+
+**Developers -- use [poetry][poetry] for an editable, project-local
+environment:**
 
 ```sh
 cd uefi_capsule_generation
@@ -39,8 +69,16 @@ poetry run qcom-capsule-tool --help
 ```
 
 `poetry install` creates `.venv/` next to `pyproject.toml` with all runtime
-and dev dependencies (ruff, mypy). Prefix subsequent commands with
-`poetry run`, or enter a shell with `poetry shell`.
+and dev dependencies (ruff, mypy, pytest). Prefix subsequent commands with
+`poetry run`, or activate the venv with `poetry env activate`.
+
+This path requires **Poetry 2.3 or newer**: `pyproject.toml` uses dependency
+groups (Poetry >= 1.2) and `[tool.poetry.build-constraints]` (Poetry >= 2.3)
+to pin the SWIG version used when building `pylibfdt`. Older releases, such
+as Poetry 1.1.x from some distribution packages, reject the file with a
+configuration validation error on every command. Upgrade with
+`pipx install poetry` (or `pipx upgrade poetry`) rather than using the
+distribution package, or use the end-user install above.
 
 Subcommands wrap the individual tools:
 
@@ -84,15 +122,18 @@ end-to-end. Output lands in `build/$(TARGET)/capsule_file.cap`.
 
 1. **OpenSSL**: A toolkit for the Transport Layer Security (TLS) and Secure
    Sockets Layer (SSL) protocols.
-1. **Python3**: A programming language widely used for scripting and
-   automation.
+1. **Python3**: version 3.9 or newer.
 1. **GIT**: version control system.
+1. **qcom-capsule-tool**: installed as described in
+   [2.1 Installation](#21-installation). Poetry is only needed for
+   development.
 
 **For Windows:**
 
 1. **OpenSSL**: Same as above.
 1. **Python3**: Same as above.
 1. **GIT**: version control system.
+1. **qcom-capsule-tool**: Same as above.
 
 Before starting the capsule generation process, you need to generate OpenSSL
 certificates as mentioned in
